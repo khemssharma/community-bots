@@ -21,18 +21,22 @@ jobs:
         with:
           node-version: '18'
 
-      # Step 3: Install dependencies
+      # Step 3: Install Chromium for Puppeteer
+      - name: Install Chromium
+        run: sudo apt-get install -y chromium-browser
+
+      # Step 4: Install dependencies
       - name: Install dependencies
         run: |
-          npm install twitter-api-v2 dotenv
+          npm install puppeteer-core dotenv
+          npm install puppeteer --ignore-scripts
 
-      # Step 4: Run the X.com Unfollow Script
+      # Step 5: Run the X.com Unfollow Script
       - name: Run X.com Unfollow Script
         env:
           X_SCREEN_NAME: ${{ secrets.X_SCREEN_NAME }}
-          X_API_KEY: ${{ secrets.X_API_KEY }}
-          X_API_SECRET: ${{ secrets.X_API_SECRET }}
-          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          X_EMAIL: ${{ secrets.X_EMAIL }}
+          X_PASSWORD: ${{ secrets.X_PASSWORD }}
           EXCLUDED_USERS: ${{ secrets.X_EXCLUDED_USERS }}
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser
         run: node unfollow-x.js
