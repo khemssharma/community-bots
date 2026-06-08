@@ -1,128 +1,153 @@
-require('dotenv').config();
 const puppeteer = require('puppeteer-core');
 
-const X_USERNAME = process.env.X_SCREEN_NAME;   // Your @username (without @)
-const X_PASSWORD = process.env.X_PASSWORD;       // Your X.com password
-const X_EMAIL    = process.env.X_EMAIL;          // Your X.com email
+const X_USERNAME = process.env.X_SCREEN_NAME;
+const X_PASSWORD = process.env.X_PASSWORD;
+const X_EMAIL    = process.env.X_EMAIL;
 const EXCLUDED_USERS = process.env.EXCLUDED_USERS
   ? process.env.EXCLUDED_USERS.split(',')
   : [];
 
-const EXEC_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser';
+const CHROMIUM_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+async function scrollToBottom(page) {
+  let lastHeight = await page.evaluate('document.body.scrollHeight');
+  while (true) {
+    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
+    await delay(2500);
+    const newHeight = await page.evaluate('document.body.scrollHeight');
+    if (newHeight === lastHeight) break;
+    lastHeight = newHeight;
+  }
+}
+
+async function getUsersFromList(page, url) {
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+  await delay(3000);
+  const users = new Set();
+  let lastCount = 0;
+  let sameCount = 0;
+  while (sameCount < 3) {
+    const handles = await page.evaluate(() => {
+      const anchors = document.querySelectorAll('a[href*="/"]');
+      const found = [];
+      anchors.forEach(a => {
+        const href = a.getAttribute('href');
+        if (href && /^\/[a-zA-Z0-9_]+$/.test(href)) {
+          const username = href.replace('/', '');
+          if (!['home','explore','notifications','messages','settings','i'].includes(username)) {
+            found.push(username.toLowerCase());
+          }
+        }
+      });
+      return [...new Set(found)];
+    });
+    handles.forEach(h => users.add(h));
+    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
+    await delay(3000);
+    if (users.size === lastCount) {
+      sameCount++;
+    } else {
+      sameCount = 0;
+      lastCount = users.size;
+    }
+  }
+  return users;
+}
+
 (async () => {
+  console.log('Starting X.com Unfollow Bot (Puppeteer)...');
   const browser = await puppeteer.launch({
-    headless: 'new',
-    executablePath: EXEC_PATH,
+    executablePath: CHROMIUM_PATH,
+    headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   });
+
   const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 900 });
+  await page.setViewport({ width: 1280, height: 800 });
+  await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
+  // Login
+  console.log('Logging in...');
+  await page.goto('https://x.com/i/flow/login', { waitUntil: 'networkidle2', timeout: 60000 });
+  await delay(3000);
+
+  await page.waitForSelector('input[autocomplete="username"]', { timeout: 20000 });
+  await page.type('input[autocomplete="username"]', X_EMAIL, { delay: 80 });
+  await page.keyboard.press('Enter');
+  await delay(3000);
+
+  // Username challenge
   try {
-    // --- LOG IN ---
-    console.log('Logging in to X.com...');
-    await page.goto('https://x.com/i/flow/login', { waitUntil: 'networkidle2' });
-    await delay(3000);
-
-    // Enter username/email
-    await page.waitForSelector('input[autocomplete="username"]', { timeout: 15000 });
-    await page.type('input[autocomplete="username"]', X_EMAIL, { delay: 80 });
-    await page.keyboard.press('Enter');
-    await delay(2000);
-
-    // Handle optional "enter username" challenge
-    const usernameChallenge = await page.$('input[data-testid="ocfEnterTextTextInput"]');
-    if (usernameChallenge) {
-      await usernameChallenge.type(X_USERNAME, { delay: 80 });
+    const challenge = await page.$('input[data-testid="ocfEnterTextTextInput"]');
+    if (challenge) {
+      console.log('Username challenge detected...');
+      await challenge.type(X_USERNAME, { delay: 80 });
       await page.keyboard.press('Enter');
-      await delay(2000);
+      await delay(3000);
     }
+  } catch (e) {}
 
-    // Enter password
-    await page.waitForSelector('input[autocomplete="current-password"]', { timeout: 10000 });
-    await page.type('input[autocomplete="current-password"]', X_PASSWORD, { delay: 80 });
-    await page.keyboard.press('Enter');
-    await delay(5000);
-    console.log('Logged in successfully.');
+  await page.waitForSelector('input[autocomplete="current-password"]', { timeout: 20000 });
+  await page.type('input[autocomplete="current-password"]', X_PASSWORD, { delay: 80 });
+  await page.keyboard.press('Enter');
+  await delay(6000);
 
-    // --- FETCH FOLLOWERS LIST ---
-    const followersUrl = `https://x.com/${X_USERNAME}/followers`;
-    console.log('Fetching followers for comparison...');
-    await page.goto(followersUrl, { waitUntil: 'networkidle2' });
-    await delay(3000);
-
-    // Scroll and collect all follower usernames
-    const followerSet = new Set();
-    let lastSize = 0;
-    for (let i = 0; i < 50; i++) {
-      const handles = await page.$$eval(
-        '[data-testid="UserCell"] a[href^="/"]',
-        (els) => els.map((e) => e.getAttribute('href').replace('/', '').toLowerCase())
-      );
-      handles.forEach((h) => { if (h && !h.includes('/')) followerSet.add(h); });
-      if (followerSet.size === lastSize) break;
-      lastSize = followerSet.size;
-      await page.evaluate(() => window.scrollBy(0, 1200));
-      await delay(1500);
-    }
-    console.log(`Total followers found: ${followerSet.size}`);
-
-    // --- FOLLOWING LIST ---
-    const followingUrl = `https://x.com/${X_USERNAME}/following`;
-    await page.goto(followingUrl, { waitUntil: 'networkidle2' });
-    await delay(3000);
-
-    let unfollowedCount = 0;
-
-    // Scroll and unfollow non-reciprocal
-    for (let scroll = 0; scroll < 200; scroll++) {
-      const users = await page.$$eval('[data-testid="UserCell"]', (cells) =>
-        cells.map((cell) => {
-          const linkEl = cell.querySelector('a[href^="/"]');
-          const btn = cell.querySelector('[data-testid="placementTracking"] button');
-          const handle = linkEl ? linkEl.getAttribute('href').replace('/', '').toLowerCase() : null;
-          const isFollowing = btn ? btn.innerText.trim() === 'Following' : false;
-          return { handle, isFollowing };
-        })
-      );
-
-      for (const user of users) {
-        if (!user.handle || !user.isFollowing) continue;
-        if (followerSet.has(user.handle)) continue;
-        if (EXCLUDED_USERS.map((u) => u.toLowerCase()).includes(user.handle)) continue;
-
-        try {
-          const cell = await page.$(`[data-testid="UserCell"] a[href="/${user.handle}"]`);
-          if (!cell) continue;
-          const parentCell = await cell.evaluateHandle((el) => el.closest('[data-testid="UserCell"]'));
-          const btn = await parentCell.$('[data-testid="placementTracking"] button');
-          if (!btn) continue;
-          await btn.click();
-          await delay(1000);
-          const confirmBtn = await page.$('[data-testid="confirmationSheetConfirm"]');
-          if (confirmBtn) await confirmBtn.click();
-          console.log(`Unfollowed @${user.handle}`);
-          unfollowedCount++;
-          await delay(3000);
-        } catch (e) {
-          console.error(`Error unfollowing @${user.handle}:`, e.message);
-        }
-      }
-
-      const prevHeight = await page.evaluate(() => document.documentElement.scrollHeight);
-      await page.evaluate(() => window.scrollBy(0, 1500));
-      await delay(2000);
-      const newHeight = await page.evaluate(() => document.documentElement.scrollHeight);
-      if (newHeight === prevHeight) break;
-    }
-
-    console.log(`\nDone! Unfollowed ${unfollowedCount} non-reciprocal account(s).`);
-  } catch (err) {
-    console.error('Fatal error:', err.message || err);
-  } finally {
+  const currentUrl = page.url();
+  console.log('After login URL:', currentUrl);
+  if (currentUrl.includes('login') || currentUrl.includes('error')) {
+    console.error('Login may have failed!');
     await browser.close();
+    process.exit(1);
   }
+  console.log('Login successful!');
+
+  // Collect following list
+  console.log('Fetching following list...');
+  const followingUrl = `https://x.com/${X_USERNAME}/following`;
+  const following = await getUsersFromList(page, followingUrl);
+  console.log(`Following count: ${following.size}`);
+
+  // Collect followers list
+  console.log('Fetching followers list...');
+  const followersUrl = `https://x.com/${X_USERNAME}/followers`;
+  const followers = await getUsersFromList(page, followersUrl);
+  console.log(`Followers count: ${followers.size}`);
+
+  // Find non-reciprocal
+  const nonReciprocal = [...following].filter(
+    u => !followers.has(u) && !EXCLUDED_USERS.map(e => e.toLowerCase()).includes(u)
+  );
+  console.log(`Non-reciprocal accounts: ${nonReciprocal.length}`);
+
+  // Unfollow each
+  for (const username of nonReciprocal) {
+    try {
+      console.log(`Unfollowing @${username}...`);
+      await page.goto(`https://x.com/${username}`, { waitUntil: 'networkidle2', timeout: 30000 });
+      await delay(2000);
+
+      // Find the Following button
+      const followingBtn = await page.$('[data-testid$="-unfollow"], [aria-label="Following"]');
+      if (followingBtn) {
+        await followingBtn.click();
+        await delay(1500);
+        // Confirm unfollow in dialog
+        const confirmBtn = await page.$('[data-testid="confirmationSheetConfirm"]');
+        if (confirmBtn) {
+          await confirmBtn.click();
+          console.log(`Unfollowed @${username}`);
+        }
+      } else {
+        console.log(`Could not find unfollow button for @${username}`);
+      }
+      await delay(3000);
+    } catch (err) {
+      console.error(`Error unfollowing @${username}: ${err.message}`);
+    }
+  }
+
+  console.log('Done!');
+  await browser.close();
 })();
