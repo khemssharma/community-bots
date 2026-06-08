@@ -1,101 +1,135 @@
 require('dotenv').config();
-const { TwitterApi } = require('twitter-api-v2');
+const puppeteer = require('puppeteer');
 
-const MY_SCREEN_NAME = process.env.X_SCREEN_NAME; // Your @username WITHOUT the @
+const X_USERNAME = process.env.X_SCREEN_NAME;   // Your @username (without @)
+const X_PASSWORD = process.env.X_PASSWORD;       // Your X.com password
+const X_EMAIL    = process.env.X_EMAIL;          // Your X.com email
 const EXCLUDED_USERS = process.env.EXCLUDED_USERS
   ? process.env.EXCLUDED_USERS.split(',')
   : [];
 
-const client = new TwitterApi({
-  appKey: process.env.X_API_KEY,
-  appSecret: process.env.X_API_SECRET,
-  accessToken: process.env.X_ACCESS_TOKEN,
-  accessSecret: process.env.X_ACCESS_SECRET,
-});
-
-const v1 = client.v1;
-
-// Rate limit safe delay
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Fetch all cursor-paginated IDs
-const fetchAllIds = async (endpoint, params) => {
-  let ids = [];
-  let cursor = -1;
-  try {
-    do {
-      const response = await v1.get(endpoint, { ...params, cursor });
-      ids = ids.concat(response.ids || []);
-      cursor = response.next_cursor || 0;
-    } while (cursor && cursor !== 0);
-  } catch (error) {
-    console.error(`Error fetching ${endpoint}:`, error.message || error);
-  }
-  return ids;
-};
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 900 });
+
   try {
-    console.log(`Running as @${MY_SCREEN_NAME}`);
+    // --- LOG IN ---
+    console.log('Logging in to X.com...');
+    await page.goto('https://x.com/i/flow/login', { waitUntil: 'networkidle2' });
+    await delay(3000);
 
-    // Fetch follower IDs
-    console.log('Fetching your followers...');
-    const followerIds = await fetchAllIds('followers/ids.json', {
-      screen_name: MY_SCREEN_NAME,
-      count: 5000,
-    });
-    console.log(`Total followers: ${followerIds.length}`);
+    // Enter username/email
+    await page.waitForSelector('input[autocomplete="username"]', { timeout: 15000 });
+    await page.type('input[autocomplete="username"]', X_EMAIL, { delay: 80 });
+    await page.keyboard.press('Enter');
+    await delay(2000);
 
-    // Fetch friend (following) IDs
-    console.log('Fetching accounts you follow...');
-    const friendIds = await fetchAllIds('friends/ids.json', {
-      screen_name: MY_SCREEN_NAME,
-      count: 5000,
-    });
-    console.log(`Total following: ${friendIds.length}`);
-
-    // Find non-reciprocal
-    const followerSet = new Set(followerIds.map(String));
-    const nonFollowerIds = friendIds.filter((id) => !followerSet.has(String(id)));
-    console.log(`Non-reciprocal count: ${nonFollowerIds.length}`);
-
-    if (nonFollowerIds.length === 0) {
-      console.log('No non-reciprocal accounts found. Done!');
-      return;
+    // Handle optional "enter username" challenge
+    const usernameChallenge = await page.$('input[data-testid="ocfEnterTextTextInput"]');
+    if (usernameChallenge) {
+      await usernameChallenge.type(X_USERNAME, { delay: 80 });
+      await page.keyboard.press('Enter');
+      await delay(2000);
     }
 
-    // Look up usernames in batches of 100
-    let nonFollowers = [];
-    for (let i = 0; i < nonFollowerIds.length; i += 100) {
-      const batch = nonFollowerIds.slice(i, i + 100);
-      const users = await v1.get('users/lookup.json', {
-        user_id: batch.join(','),
-      });
-      nonFollowers = nonFollowers.concat(users);
+    // Enter password
+    await page.waitForSelector('input[autocomplete="current-password"]', { timeout: 10000 });
+    await page.type('input[autocomplete="current-password"]', X_PASSWORD, { delay: 80 });
+    await page.keyboard.press('Enter');
+    await delay(5000);
+    console.log('Logged in successfully.');
+
+    // --- FETCH FOLLOWING LIST ---
+    const followingUrl = `https://x.com/${X_USERNAME}/following`;
+    console.log(`Opening following list: ${followingUrl}`);
+    await page.goto(followingUrl, { waitUntil: 'networkidle2' });
+    await delay(3000);
+
+    // --- FETCH FOLLOWERS LIST for comparison ---
+    console.log('Fetching followers for comparison...');
+    const followersUrl = `https://x.com/${X_USERNAME}/followers`;
+    await page.goto(followersUrl, { waitUntil: 'networkidle2' });
+    await delay(3000);
+
+    // Scroll and collect all follower usernames
+    const followerSet = new Set();
+    let lastSize = 0;
+    for (let i = 0; i < 50; i++) {
+      const handles = await page.$$eval(
+        '[data-testid="UserCell"] a[href^="/"]',
+        (els) => els.map((e) => e.getAttribute('href').replace('/', '').toLowerCase())
+      );
+      handles.forEach((h) => { if (h && !h.includes('/')) followerSet.add(h); });
+      if (followerSet.size === lastSize) break;
+      lastSize = followerSet.size;
+      await page.evaluate(() => window.scrollBy(0, 1200));
+      await delay(1500);
     }
+    console.log(`Total followers found: ${followerSet.size}`);
 
-    // Exclude protected accounts
-    const toUnfollow = nonFollowers.filter(
-      (u) => !EXCLUDED_USERS.includes(u.screen_name)
-    );
+    // --- BACK TO FOLLOWING LIST ---
+    await page.goto(followingUrl, { waitUntil: 'networkidle2' });
+    await delay(3000);
 
-    console.log(`Accounts to unfollow: ${toUnfollow.map((u) => u.screen_name).join(', ')}`);
-    console.log(`Total to unfollow: ${toUnfollow.length}`);
+    let unfollowedCount = 0;
 
-    // Unfollow each with rate limit delay
-    for (const user of toUnfollow) {
-      try {
-        console.log(`Unfollowing @${user.screen_name}...`);
-        await v1.post('friendships/destroy.json', { user_id: user.id_str });
-        console.log(`Unfollowed @${user.screen_name}`);
-        await delay(18000); // ~50 unfollows per 15 min
-      } catch (err) {
-        console.error(`Failed to unfollow @${user.screen_name}:`, err.message || err);
+    // Scroll and unfollow non-reciprocal
+    for (let scroll = 0; scroll < 200; scroll++) {
+      // Get all Following buttons with their associated usernames
+      const users = await page.$$eval('[data-testid="UserCell"]', (cells) =>
+        cells.map((cell) => {
+          const linkEl = cell.querySelector('a[href^="/"]');
+          const btn = cell.querySelector('[data-testid="placementTracking"] button');
+          const handle = linkEl ? linkEl.getAttribute('href').replace('/', '').toLowerCase() : null;
+          const isFollowing = btn ? btn.innerText.trim() === 'Following' : false;
+          return { handle, isFollowing };
+        })
+      );
+
+      for (const user of users) {
+        if (!user.handle || !user.isFollowing) continue;
+        if (followerSet.has(user.handle)) continue; // they follow back
+        if (EXCLUDED_USERS.map((u) => u.toLowerCase()).includes(user.handle)) continue;
+
+        // Click Unfollow
+        try {
+          const cell = await page.$(`[data-testid="UserCell"] a[href="/${user.handle}"]`);
+          if (!cell) continue;
+          const parentCell = await cell.evaluateHandle((el) => el.closest('[data-testid="UserCell"]'));
+          const btn = await parentCell.$('[data-testid="placementTracking"] button');
+          if (!btn) continue;
+          await btn.click();
+          await delay(1000);
+          // Confirm unfollow in modal
+          const confirmBtn = await page.$('[data-testid="confirmationSheetConfirm"]');
+          if (confirmBtn) await confirmBtn.click();
+          console.log(`Unfollowed @${user.handle}`);
+          unfollowedCount++;
+          await delay(3000); // respectful delay
+        } catch (e) {
+          console.error(`Error unfollowing @${user.handle}:`, e.message);
+        }
       }
+
+      // Scroll down to load more
+      const prevHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+      await page.evaluate(() => window.scrollBy(0, 1500));
+      await delay(2000);
+      const newHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+      if (newHeight === prevHeight) break; // no more content
     }
 
-    console.log('Done! Unfollowed all non-reciprocal accounts.');
-  } catch (error) {
-    console.error('Fatal error:', error.message || error);
+    console.log(`\nDone! Unfollowed ${unfollowedCount} non-reciprocal account(s).`);
+  } catch (err) {
+    console.error('Fatal error:', err.message || err);
+    await page.screenshot({ path: 'error-screenshot.png' });
+  } finally {
+    await browser.close();
   }
 })();
