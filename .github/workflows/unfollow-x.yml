@@ -1,0 +1,38 @@
+name: Automate Unfollow Non-Reciprocal X.com Accounts
+
+on:
+  schedule:
+    # Run every 8 hours (same as GitHub unfollow bot)
+    - cron: "0 0/8 * * *"
+  workflow_dispatch: # Allows manual runs from GitHub Actions UI
+
+jobs:
+  unfollow-x-non-reciprocal:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Set up Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      # Step 3: Install dependencies
+      - name: Install dependencies
+        run: |
+          npm install twitter-api-v2 dotenv
+
+      # Step 4: Run the X.com Unfollow Script
+      - name: Run X.com Unfollow Script
+        env:
+          X_USER_ID: ${{ secrets.X_USER_ID }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          EXCLUDED_USERS: ${{ secrets.X_EXCLUDED_USERS }}
+        run: node unfollow-x.js
