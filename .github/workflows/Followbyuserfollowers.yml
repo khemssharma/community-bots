@@ -30,4 +30,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.TOKEN }}
           TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
         run: |
-          node Followbyuserfollowers.js
+          node github-bots/Followbyuserfollowers.js

@@ -29,4 +29,4 @@ jobs:
           GITHUB_USERNAME: ${{ secrets.USERNAME }}
           GITHUB_TOKEN: ${{ secrets.TOKEN }}
         run: |
-          node followback-all.js
+          node github-bots/followback-all.js

@@ -29,4 +29,4 @@ jobs:
           GITHUB_USERNAME: ${{ secrets.USERNAME }}
           GITHUB_TOKEN: ${{ secrets.TOKEN }}
         run: |
-          node unfollow.js
+          node github-bots/unfollow.js
