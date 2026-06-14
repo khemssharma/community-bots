@@ -120,15 +120,34 @@ const fetchAllPages = async (path) => {
     // ── 1. Fetch the target's following list ────────────────────────────────
     console.log(`Fetching users followed by ${TARGET_USERNAME}…`);
     const targetFollowing = await fetchAllPages(`/users/${TARGET_USERNAME}/following`);
-    const toFollow = targetFollowing.map((u) => u.login);
-    console.log(`${TARGET_USERNAME} follows ${toFollow.length} users.`);
+    console.log(`${TARGET_USERNAME} follows ${targetFollowing.length} users.`);
+
+    // ── 2. Fetch your own followers so we can skip them ─────────────────────
+    // Uses /user/followers, which returns the followers of the authenticated
+    // user (the account behind GITHUB_TOKEN).
+    console.log('Fetching your own followers…');
+    const myFollowers = await fetchAllPages('/user/followers');
+    // GitHub logins are case-insensitive, so normalise to lowercase for lookup.
+    const followerLogins = new Set(myFollowers.map((u) => u.login.toLowerCase()));
+    console.log(`You currently have ${followerLogins.size} followers.`);
+
+    // ── 3. Build the follow list, excluding anyone who already follows you ──
+    const toFollow = targetFollowing
+      .map((u) => u.login)
+      .filter((login) => !followerLogins.has(login.toLowerCase()));
+
+    const skipped = targetFollowing.length - toFollow.length;
+    if (skipped > 0) {
+      console.log(`Skipping ${skipped} user(s) who already follow you.`);
+    }
+    console.log(`${toFollow.length} user(s) to follow.`);
 
     if (toFollow.length === 0) {
       console.log('Nothing to do.');
       return;
     }
 
-    // ── 2. Follow each user with delay + retry ──────────────────────────────
+    // ── 4. Follow each user with delay + retry ──────────────────────────────
     let succeeded = 0;
     let failed = 0;
 
@@ -155,7 +174,7 @@ const fetchAllPages = async (path) => {
       }
     }
 
-    console.log(`\nDone. Followed: ${succeeded}, Failed: ${failed}`);
+    console.log(`\nDone. Followed: ${succeeded}, Failed: ${failed}, Skipped (already follow you): ${skipped}`);
   } catch (error) {
     console.error('Fatal error:', error.response?.data || error.message);
     process.exit(1);
