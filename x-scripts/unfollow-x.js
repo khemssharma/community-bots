@@ -43,7 +43,7 @@
     longPauseEvery: 10,   // after this many unfollows, take a long pause
     longPauseMs: 60000,   // length of the long pause
     maxPerRun: 150,       // hard cap per run (0 = no cap)
-    dryRun: true,         // preview only; do not actually unfollow
+    dryRun: false,         // preview only; do not actually unfollow
     hideVerified: false,  // exclude verified accounts from the unfollow list
     hideProtected: false, // exclude protected/private accounts
   };
