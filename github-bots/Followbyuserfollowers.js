@@ -1,5 +1,7 @@
 require('dotenv').config();
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
 const GITHUB_USERNAME = process.env.GITHUB_USERNAME;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -8,6 +10,7 @@ const TARGET_USERNAME = process.env.TARGET_USERNAME;
 const MAX_RETRIES = 5;
 const BASE_RETRY_DELAY_MS = 60_000;   // Start retry wait at 60 s after a 429
 const FOLLOW_DELAY_MS = 3_000;        // 3 s between follow calls (~1200/hour max)
+const PROGRESS_FILE = path.join(__dirname, 'follow-progress.json');
 
 const api = axios.create({
   baseURL: 'https://api.github.com',
@@ -30,9 +33,39 @@ const msUntilReset = (headers) => {
   return Math.max(waitMs, 0);
 };
 
+// ─── Progress persistence ────────────────────────────────────────────────
+// Tracks who has DEFINITELY been followed successfully in this run (and
+// past runs), and what's left to do. This is the source of truth the
+// script trusts about its own actions — independent of GitHub's follower
+// list, which can lag a bit right after a follow/unfollow.
+
+const loadProgress = () => {
+  if (!fs.existsSync(PROGRESS_FILE)) return { followed: [], remaining: null };
+  try {
+    return JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8'));
+  } catch {
+    console.warn('⚠️  Could not parse progress file, starting fresh.');
+    return { followed: [], remaining: null };
+  }
+};
+
+const saveProgress = (followedSet, remainingList) => {
+  fs.writeFileSync(
+    PROGRESS_FILE,
+    JSON.stringify(
+      { followed: Array.from(followedSet), remaining: remainingList, updatedAt: new Date().toISOString() },
+      null,
+      2
+    )
+  );
+};
+
 /**
  * Wraps an API call with exponential back-off for both primary (403/429 with
  * x-ratelimit-remaining: 0) and secondary (403 "secondary rate limit") limits.
+ * When retries are exhausted due to rate limiting, the thrown error is
+ * tagged with `rateLimitExhausted: true` so callers can distinguish
+ * "GitHub is throttling us" from "this specific user failed for its own reason".
  */
 const apiCallWithRetry = async (fn, retries = MAX_RETRIES) => {
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -67,6 +100,7 @@ const apiCallWithRetry = async (fn, retries = MAX_RETRIES) => {
       if (isSecondaryLimit || isPrimaryLimit) {
         if (attempt === retries) {
           console.error(`Rate limit hit and max retries (${retries}) exhausted. Giving up.`);
+          error.rateLimitExhausted = true; // ← tag it so callers know this isn't a per-user failure
           throw error;
         }
 
@@ -112,54 +146,66 @@ const fetchAllPages = async (path) => {
 
 (async () => {
   try {
-    // ── 1. Fetch TARGET's followers (these are who we will follow) ──────────
-    console.log(`Fetching followers of ${TARGET_USERNAME}…`);
-    const targetFollowers = await fetchAllPages(`/users/${TARGET_USERNAME}/followers`);
-    const targetFollowerLogins = targetFollowers.map((u) => u.login);
-    console.log(`${TARGET_USERNAME} has ${targetFollowerLogins.length} followers.`);
+    const progress = loadProgress();
+    const followedLog = new Set(progress.followed);
 
-    if (targetFollowerLogins.length === 0) {
-      console.log('No followers found. Nothing to do.');
-      return;
-    }
+    let toFollow;
 
-    // ── 2. Fetch who YOU already follow and who already follows YOU ─────────
-    // GitHub logins are case-insensitive, so we normalise to lowercase when
-    // building skip sets (while keeping original casing for the follow call).
-    console.log(`Fetching accounts you (${GITHUB_USERNAME}) already follow…`);
-    const alreadyFollowing = await fetchAllPages(`/users/${GITHUB_USERNAME}/following`);
-    const alreadyFollowingSet = new Set(alreadyFollowing.map((u) => u.login.toLowerCase()));
-    console.log(`You already follow ${alreadyFollowingSet.size} accounts.`);
+    if (progress.remaining && progress.remaining.length > 0) {
+      // ── Resume a previously interrupted run ──────────────────────────
+      console.log(`Resuming previous run: ${progress.remaining.length} users still pending.`);
+      toFollow = progress.remaining;
+    } else {
+      // ── 1. Fetch TARGET's followers (these are who we will follow) ──
+      console.log(`Fetching followers of ${TARGET_USERNAME}…`);
+      const targetFollowers = await fetchAllPages(`/users/${TARGET_USERNAME}/followers`);
+      const targetFollowerLogins = targetFollowers.map((u) => u.login);
+      console.log(`${TARGET_USERNAME} has ${targetFollowerLogins.length} followers.`);
 
-    console.log('Fetching your own followers…');
-    const myFollowers = await fetchAllPages('/user/followers');
-    const myFollowerSet = new Set(myFollowers.map((u) => u.login.toLowerCase()));
-    console.log(`You currently have ${myFollowerSet.size} followers.`);
+      if (targetFollowerLogins.length === 0) {
+        console.log('No followers found. Nothing to do.');
+        return;
+      }
 
-    const selfLogin = GITHUB_USERNAME.toLowerCase();
+      // ── 2. Fetch who YOU already follow and who already follows YOU ─
+      console.log(`Fetching accounts you (${GITHUB_USERNAME}) already follow…`);
+      const alreadyFollowing = await fetchAllPages(`/users/${GITHUB_USERNAME}/following`);
+      const alreadyFollowingSet = new Set(alreadyFollowing.map((u) => u.login.toLowerCase()));
+      console.log(`You already follow ${alreadyFollowingSet.size} accounts.`);
 
-    // ── 3. Skip yourself, anyone you already follow, and anyone who already ──
-    //       follows you.
-    const toFollow = targetFollowerLogins.filter((login) => {
-      const key = login.toLowerCase();
-      return (
-        key !== selfLogin &&
-        !alreadyFollowingSet.has(key) &&
-        !myFollowerSet.has(key)
+      console.log('Fetching your own followers…');
+      const myFollowers = await fetchAllPages('/user/followers');
+      const myFollowerSet = new Set(myFollowers.map((u) => u.login.toLowerCase()));
+      console.log(`You currently have ${myFollowerSet.size} followers.`);
+
+      const selfLogin = GITHUB_USERNAME.toLowerCase();
+
+      // ── 3. Skip yourself, anyone you already follow (per API or per our
+      //       own log — the log catches cases where GitHub's own listing
+      //       hasn't caught up yet), and anyone who already follows you.
+      toFollow = targetFollowerLogins.filter((login) => {
+        const key = login.toLowerCase();
+        return (
+          key !== selfLogin &&
+          !alreadyFollowingSet.has(key) &&
+          !myFollowerSet.has(key) &&
+          !followedLog.has(login)
+        );
+      });
+
+      console.log(
+        `\nAfter deduplication: ${toFollow.length} new accounts to follow ` +
+          `(skipped ${targetFollowerLogins.length - toFollow.length}).\n`
       );
-    });
-
-    console.log(
-      `\nAfter deduplication: ${toFollow.length} new accounts to follow ` +
-        `(skipped ${targetFollowerLogins.length - toFollow.length}).\n`
-    );
+    }
 
     if (toFollow.length === 0) {
       console.log('Nothing left to follow. Nothing to do.');
+      if (fs.existsSync(PROGRESS_FILE)) fs.unlinkSync(PROGRESS_FILE);
       return;
     }
 
-    // ── 4. Follow each user with delay + retry ──────────────────────────────
+    // ── 4. Follow each user with delay + retry ──────────────────────────
     let succeeded = 0;
     let failed = 0;
 
@@ -171,22 +217,43 @@ const fetchAllPages = async (path) => {
         await apiCallWithRetry(() => api.put(`/user/following/${user}`));
         console.log(`  ✓ Followed ${user}`);
         succeeded++;
+        followedLog.add(user);
+        // Persist after every success so a crash never loses confirmed progress.
+        saveProgress(followedLog, toFollow.slice(i + 1));
       } catch (error) {
+        if (error.rateLimitExhausted) {
+          // This is the critical fix: we do NOT know whether this specific
+          // follow went through, and every subsequent call will hit the
+          // same wall. Stop immediately instead of marking the rest as
+          // "failed" and burning through the list.
+          console.error(
+            `\n🛑 Rate limit exhausted at user ${user} (${i + 1}/${toFollow.length}). ` +
+              `Stopping to avoid inconsistent state.`
+          );
+          console.error(
+            `${toFollow.length - i} users remain (including ${user}, which will be retried). ` +
+              `Progress saved to ${PROGRESS_FILE} — rerun the script later to resume.`
+          );
+          saveProgress(followedLog, toFollow.slice(i)); // re-include current user, its outcome is unknown
+          process.exit(1);
+        }
+
+        // A genuine per-user failure (e.g. user not found, blocked) — safe to continue.
         console.error(
           `  ✗ Failed to follow ${user}:`,
           error.response?.data?.message || error.message
         );
         failed++;
+        saveProgress(followedLog, toFollow.slice(i + 1));
       }
 
-      // Throttle between every follow call to stay clear of secondary limits.
-      // 3 s gap → max ~1200 follow calls/hour, well within the 5000/hour budget.
       if (i < toFollow.length - 1) {
         await delay(FOLLOW_DELAY_MS);
       }
     }
 
     console.log(`\nDone. Followed: ${succeeded}, Failed: ${failed}`);
+    if (fs.existsSync(PROGRESS_FILE)) fs.unlinkSync(PROGRESS_FILE); // clean slate on full completion
   } catch (error) {
     console.error('Fatal error:', error.response?.data || error.message);
     process.exit(1);
