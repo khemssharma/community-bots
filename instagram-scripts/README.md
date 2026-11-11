@@ -19,7 +19,8 @@ Both scripts work the same way. They open each profile in a small popup window, 
 2. Choose **Some of your information → Followers and following**.
 3. Set **Format: HTML** and **Date range: All time**.
 
-   Don't skip the date range. With the default *Last year*, older follows are missing, and the not-following-back list will be badly wrong. In our test, the one-year export flagged 576 accounts and the all-time export flagged 191.
+   Don't skip the date range. With the default *Last year*, older follows are missing, and the not-following-back list will be badly wrong. 
+   
 4. Download the file and unzip it. The files you need are in `connections/followers_and_following/`:
    - `pending_follow_requests.html`
    - `following.html`
@@ -32,7 +33,8 @@ Both scripts work the same way. They open each profile in a small popup window, 
 3. Give it any name. In **URL**, paste the **whole one-line contents** of the `.bookmarklet` file.
 
    Chrome sometimes removes `javascript:` from the start when you paste. If it does, type it back in.
-4. Allow popups for instagram.com when Chrome asks.
+   
+5. Allow popups for instagram.com when Chrome asks.
 
 ---
 
