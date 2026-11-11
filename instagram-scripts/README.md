@@ -9,6 +9,8 @@ Clean up your Instagram from the browser using only your own **data export** and
 
 Both scripts work the same way. They open each profile in a small popup window, check the button, and click only when it's safe. Progress is saved in `localStorage`, so you can stop and resume any time.
 
+> ☕ Did this save you hours of tapping? [**Sponsor me on GitHub**](https://github.com/sponsors/khemssharma) and I'll keep these scripts working when Instagram changes things.
+
 > ⚠️ **Read this first.** Instagram's Terms of Use don't allow automated activity. Instagram also limits how many follow and unfollow actions an account can take in a short time. These scripts go slowly and stop on their own when Instagram pushes back, but running them is **at your own risk**. Use them only on your own account.
 
 ---
@@ -106,3 +108,9 @@ The list is now on your clipboard.
 | *"Popup blocked"* | Allow popups for instagram.com, then press START again |
 | Lots of *Failed* | Instagram probably changed its layout or is limiting you. Stop, wait a few hours, and try again |
 | Want to start over | In the instagram.com console, run `localStorage.removeItem('cfr_idx')` or `localStorage.removeItem('uf_idx')` |
+
+---
+
+## ❤️ Support
+
+These scripts are free. If they cleaned up your account, you can say thanks by [**sponsoring me on GitHub**](https://github.com/sponsors/khemssharma) or by starring ⭐ the repo. Sponsors keep the scripts maintained when Instagram changes its layout.
