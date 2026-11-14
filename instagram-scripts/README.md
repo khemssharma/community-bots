@@ -107,7 +107,32 @@ The list is now on your clipboard.
 | Nothing happens when you click the bookmark | Check that the URL starts with `javascript:` |
 | *"Popup blocked"* | Allow popups for instagram.com, then press START again |
 | Lots of *Failed* | Instagram probably changed its layout or is limiting you. Stop, wait a few hours, and try again |
-| Want to start over | In the instagram.com console, run `localStorage.removeItem('cfr_idx')` or `localStorage.removeItem('uf_idx')` |
+| Want to start over | See [Start over](#start-over) |
+
+## Start over
+
+Each bookmarklet saves its progress in instagram.com's `localStorage`:
+
+| Bookmarklet | Saved keys |
+|---|---|
+| cancel-follow-requests | `cfr_list`, `cfr_idx`, `cfr_stats` |
+| unfollow-non-followers | `uf_list`, `uf_idx`, `uf_stats` |
+
+Open instagram.com, press F12, open **Console**, and run one of these. Use `uf_` for unfollow-non-followers or `cfr_` for cancel-follow-requests.
+
+**Reset the counters but keep the list:**
+
+```js
+['uf_stats', 'uf_idx'].forEach(k => localStorage.removeItem(k));
+```
+
+**Wipe everything, including the list:**
+
+```js
+Object.keys(localStorage).filter(k => k.startsWith('uf_')).forEach(k => localStorage.removeItem(k));
+```
+
+Reload the page to close the panel, then click the bookmarklet again.
 
 ---
 
